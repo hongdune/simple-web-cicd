@@ -31,19 +31,25 @@ jobs:
 
     - name: Build and push Docker image
       run: |
-        IMAGE_TAG=$(date +%Y%m%d%H%M%S)
+        IMAGE_TAG=$(echo $GITHUB_SHA | cut -c1-8)
         IMAGE_URI=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
         
+        echo "🔨 Building Docker image..."
         docker build -t $IMAGE_URI .
+        
+        echo "📦 Pushing image to ECR..."
         docker push $IMAGE_URI
         
-        echo "New image: $IMAGE_URI"
+        echo "✅ Image pushed successfully: $IMAGE_URI"
 
-    - name: Force new deployment
+    - name: Deploy to ECS
       run: |
-        aws ecs update-service --cluster $ECS_CLUSTER --service $ECS_SERVICE --force-new-deployment
-        echo "🚀 Forced new deployment triggered!"
+        echo "🚀 Triggering ECS deployment..."
+        aws ecs update-service \
+          --cluster $ECS_CLUSTER \
+          --service $ECS_SERVICE \
+          --force-new-deployment \
+          --no-cli-pager
         
-        # 배포 상태 확인 (선택사항)
-        aws ecs wait services-stable --cluster $ECS_CLUSTER --services $ECS_SERVICE --max-attempts 10 --delay 30
-        echo "✅ Deployment completed!"
+        echo "✅ Deployment triggered! Check ECS console for progress."
+        echo "🌐 Your app will be updated in a few minutes."
