@@ -1,4 +1,4 @@
-name: Deploy to ECS (Simple)
+name: Deploy to ECS with Task Definition Update
 
 on:
   push:
@@ -8,6 +8,8 @@ env:
   ECR_REPOSITORY: simple-web-server
   ECS_SERVICE: simple-web-service
   ECS_CLUSTER: simple-web-cluster
+  ECS_TASK_DEFINITION: simple-web-task
+  CONTAINER_NAME: simple-web-container
 
 jobs:
   deploy:
@@ -34,22 +36,56 @@ jobs:
         IMAGE_TAG=$(echo $GITHUB_SHA | cut -c1-8)
         IMAGE_URI=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
         
-        echo "🔨 Building Docker image..."
+        echo "🔨 Building Docker image with tag: $IMAGE_TAG"
         docker build -t $IMAGE_URI .
         
         echo "📦 Pushing image to ECR..."
         docker push $IMAGE_URI
         
-        echo "✅ Image pushed successfully: $IMAGE_URI"
+        echo "NEW_IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+        echo "✅ Image pushed: $IMAGE_URI"
 
-    - name: Deploy to ECS
+    - name: Create new task definition
       run: |
-        echo "🚀 Triggering ECS deployment..."
+        # 현재 작업 정의 가져오기
+        echo "📋 Getting current task definition..."
+        aws ecs describe-task-definition \
+          --task-definition $ECS_TASK_DEFINITION \
+          --query taskDefinition > current-task-def.json
+        
+        # 새 작업 정의 생성 (불필요한 필드 제거 및 이미지 업데이트)
+        echo "🔄 Creating new task definition with image: $NEW_IMAGE_URI"
+        cat current-task-def.json | jq --arg NEW_IMAGE "$NEW_IMAGE_URI" '
+          del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .placementConstraints, .compatibilities, .registeredAt, .registeredBy) |
+          .containerDefinitions[0].image = $NEW_IMAGE
+        ' > new-task-def.json
+        
+        # 새 작업 정의 등록
+        NEW_REVISION=$(aws ecs register-task-definition \
+          --cli-input-json file://new-task-def.json \
+          --query 'taskDefinition.revision' \
+          --output text)
+        
+        echo "NEW_TASK_DEF_REVISION=$NEW_REVISION" >> $GITHUB_ENV
+        echo "✅ New task definition registered: $ECS_TASK_DEFINITION:$NEW_REVISION"
+
+    - name: Update ECS service
+      run: |
+        echo "🚀 Updating ECS service with new task definition..."
         aws ecs update-service \
           --cluster $ECS_CLUSTER \
           --service $ECS_SERVICE \
-          --force-new-deployment \
+          --task-definition $ECS_TASK_DEFINITION:$NEW_TASK_DEF_REVISION \
           --no-cli-pager
         
-        echo "✅ Deployment triggered! Check ECS console for progress."
-        echo "🌐 Your app will be updated in a few minutes."
+        echo "✅ Service update triggered!"
+        echo "🌐 New deployment in progress with image: $NEW_IMAGE_URI"
+        
+        # 배포 상태 간단 확인
+        sleep 30
+        echo "📊 Current service status:"
+        aws ecs describe-services \
+          --cluster $ECS_CLUSTER \
+          --services $ECS_SERVICE \
+          --query 'services[0].{RunningCount:runningCount,DesiredCount:desiredCount,TaskDefinition:taskDefinition}' \
+          --output table
